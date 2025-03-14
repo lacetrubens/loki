@@ -1,0 +1,139 @@
+#!/bin/bash
+
+# Instala dependências
+sudo apt install gpg rsyslog -y
+
+# Ajusta permissões de arquivos de log
+sudo chmod 755 /var/log/pveproxy
+sudo chmod 644 /var/log/pveproxy/access.log
+sudo chmod 644 /var/log/auth.log
+sudo chmod 644 /var/log/pve-firewall.log
+sudo chmod 644 /var/log/apt/term.log
+
+# Configura repositório do Grafana
+sudo mkdir -p /etc/apt/keyrings/
+wget -q -O - https://apt.grafana.com/gpg.key | gpg --dearmor | sudo tee /etc/apt/keyrings/grafana.gpg > /dev/null
+echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main" | sudo tee /etc/apt/sources.list.d/grafana.list
+sudo apt-get update
+sudo apt-get install promtail -y
+
+# Obtém o IP da máquina e o nome do host
+ip_maquina=$(ping -c 1 loki.app | head -n 1 | grep -oP '\(\K[^\)]+' | head -n 1)
+nome_maquina=$(hostname)
+
+# Cria o arquivo de configuração do Promtail usando heredoc
+sudo tee /etc/promtail/config.yml > /dev/null <<EOF
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+  log_level: info
+
+clients:
+  - url: http://$ip_maquina:3100/loki/api/v1/push
+    batchwait: 1s
+    batchsize: 102400
+    timeout: 10s
+
+positions:
+  filename: /tmp/positions.yaml
+
+scrape_configs:
+  # Coleta logs de histórico do APT
+  - job_name: $nome_maquina-history
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: $nome_maquina
+          log_type: history
+          __path__: /var/log/apt/history.log
+
+  # Coleta logs de autenticação
+  - job_name: $nome_maquina-auth
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: $nome_maquina
+          log_type: auth
+          __path__: /var/log/auth.log
+
+  # Coleta logs de terminal do APT
+  - job_name: $nome_maquina-term
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: $nome_maquina
+          log_type: term
+          __path__: /var/log/apt/term.log
+
+  # Coleta logs de backup das VMs (QEMU)
+  - job_name: $nome_maquina-qemu
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: $nome_maquina
+          log_type: qemu
+          __path__: /var/log/vzdump/qemu-*.log
+
+  # Coleta logs de acesso ao Proxmox (filtra entradas do Zabbix)
+  - job_name: $nome_maquina-access
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: $nome_maquina
+          log_type: access
+          __path__: /var/log/pveproxy/access.log
+    pipeline_stages:
+      - drop:
+          expression: ".*zabbix@pve.*"
+
+  # Coleta logs do DPKG
+  - job_name: $nome_maquina-dpkg
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: $nome_maquina
+          log_type: dpkg
+          __path__: /var/log/dpkg.log
+
+  # Coleta logs do Fontconfig
+  - job_name: $nome_maquina-fontconfig
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: $nome_maquina
+          log_type: fontconfig
+          __path__: /var/log/fontconfig.log
+
+  # Coleta logs do firewall do Proxmox
+  - job_name: $nome_maquina-pve-firewall
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: $nome_maquina
+          log_type: firewall
+          __path__: /var/log/pve-firewall.log
+
+  # Coleta logs de alternativas do sistema
+  - job_name: $nome_maquina-alternatives
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: $nome_maquina
+          log_type: alternatives
+          __path__: /var/log/alternatives.log
+EOF
+
+# Inicia e habilita o Promtail
+sudo systemctl start promtail
+sudo systemctl restart promtail
+sudo systemctl enable promtail.service
+sudo systemctl status promtail
