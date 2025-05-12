@@ -1,0 +1,42 @@
+sudo apt install gpg -y
+sudo mkdir -p /etc/apt/keyrings/
+wget -q -O - https://apt.grafana.com/gpg.key | gpg --dearmor | sudo tee /etc/apt/keyrings/grafana.gpg > /dev/null
+echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main" | sudo tee /etc/apt/sources.list.d/grafana.list
+sudo apt-get update
+sudo apt-get install promtail -y
+
+
+
+ip_maquina=$(ping -c 1 loki.app | head -n 1 | grep -oP '\(\K[^\)]+' | head -n 1)
+nome_maquina=$(hostname)
+
+echo "server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+clients:
+  - url: http://$ip_maquina:3100/loki/api/v1/push
+
+positions:
+  filename: /tmp/positions.yaml
+
+scrape_configs:
+  - job_name: $nome_maquina-audit
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: $nome_maquina-audit
+          __path__: /var/log/gunicorn/audit.log*
+  - job_name: $nome_maquina-errors
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: $nome_maquina-errors
+          __path__: /var/log/gunicorn/internal_errors.log*" > /etc/promtail/config.yml
+
+sudo systemctl start promtail
+sudo systemctl restart promtail
+sudo systemctl enable promtail.service
+sudo systemctl status promtail
